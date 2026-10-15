@@ -7,7 +7,7 @@ quemada** (reto básico) y **detecta los focos de fuego activo** (reto avanzado)
 con el perímetro y los focos dibujados. No entrena ningún modelo: usa reglas basadas en la física de la banda
 SWIR, con umbrales relativos a cada escena para generalizar a imágenes nuevas.
 
-**Estado: motor de análisis por línea de comandos (sin interfaz web todavía).**
+**Estado: motor de análisis por línea de comandos, con modo lote `--batch` e índice HTML (sin interfaz web todavía).**
 
 ## Qué hace
 
@@ -16,6 +16,7 @@ SWIR, con umbrales relativos a cada escena para generalizar a imágenes nuevas.
 - **Quemado probable bajo el humo:** estimación aparte, claramente marcada como menos fiable que el área confirmada.
 - **Humo de baja confianza:** los fragmentos de humo pequeños o sueltos se marcan como posibles errores de detección y no se usan en el análisis.
 - **Superficie con rango** (estricto–permisivo), perímetro en km, GeoJSON, informe JSON y descripción en lenguaje natural.
+- **Modo lote:** `--batch` analiza todas las escenas de una carpeta de una vez (emparejamiento por nombre de fichero) y genera `resumen.html` con todas las escenas en una tabla revisable.
 - **Accesibilidad de base:** paleta apta para daltonismo (Okabe-Ito), tramas y formas distintas (nunca solo color), leyenda fuera de la imagen y texto alternativo generado automáticamente.
 
 ## Instalación
@@ -36,20 +37,38 @@ python -m firewatch --swir images/niebla/swir.jpg --truecolor images/niebla/true
                     --wildfire images/niebla/wildfire.jpg --out resultados/niebla
 ```
 
+**Lote:** para analizar varias escenas de una vez, en lugar de ir de una en una:
+
+```bash
+python -m firewatch --batch images/ --out resultados/lote
+```
+
+Recorre la carpeta (también subcarpetas) y empareja las composiciones **por nombre de fichero**: en cada
+carpeta, el que contiene `swir` es la SWIR, el que contiene `truecolor` (o se llama `tc`) el True Color y el
+que contiene `wildfire` (también sirve `…_Wildfires.jpg`) la Wildfire. Una carpeta con SWIR = una escena;
+sus salidas van a `--out/<nombre_de_la_carpeta>/`. Las carpetas sin SWIR se omiten con aviso, una imagen
+rota no detiene el lote, y al final se genera `--out/resumen.html` con una fila por escena (miniatura,
+superficie, focos, avisos y estado).
+
 En Windows usa `\` en las rutas (`images\avila\swir.jpg`) y ponlas entre comillas si tienen espacios.
 
 | Opción | Obligatoria | Para qué |
 |---|---|---|
-| `--swir` | **sí** | Composición SWIR (B12-B8A-B4). Contiene la información clave; sin ella no funciona. |
+| `--swir` | **sí** (o `--batch`) | Composición SWIR (B12-B8A-B4). Contiene la información clave; sin ella no funciona. |
+| `--batch CARPETA` | **sí** (o `--swir`) | Analiza todas las escenas de la carpeta, emparejando por nombre de fichero. Excluyente con `--swir`. |
 | `--truecolor` | recomendada | Detecta mejor el humo y confirma el agua. Sin ella el resultado es casi igual, algo menos preciso. |
 | `--wildfire` | opcional | Añade los píxeles calientes de la composición Wildfire (experimental). |
-| `--out` | sí | Carpeta de salida (se crea sola). |
+| `--out` | sí | Carpeta de salida (se crea sola). Con `--batch`, una subcarpeta por escena. |
 | `--base swir\|truecolor\|wildfire` | no | Imagen sobre la que se dibuja el resultado (por defecto SWIR). |
 | `--pixel-size 10` | no | Metros por píxel **de la imagen original**, para obtener hectáreas y km. |
 | `--bbox LON_MIN LAT_MIN LON_MAX LAT_MAX` | no | Extensión geográfica WGS84: da hectáreas y coordenadas reales en el GeoJSON. |
 | `--max-side 2500` | no | Lado mayor máximo (px) con el que se analiza. Las imágenes mayores se reducen y la superficie se corrige. `0` = tamaño original (lento). |
 | `--no-smoke-recovery` | no | No estima el quemado probable bajo el humo. |
 | `--no-debug` | no | No genera el panel de diagnóstico (ahorra tiempo). |
+
+Con `--batch`, `--base`, `--pixel-size`, `--bbox`, `--max-side`, `--no-smoke-recovery` y `--no-debug`
+se aplican a **todas** las escenas del lote. Códigos de salida: `0` todo correcto, `1` alguna escena ha
+fallado (el resto se analiza igualmente), `2` no se ha encontrado ninguna escena con SWIR.
 
 **Sobre la escala:** si la imagen es una captura o está reescalada, el tamaño de píxel ya no es 10/20 m. Sin
 `--pixel-size` ni `--bbox` el resultado se da en píxeles y % de la imagen.
@@ -68,6 +87,7 @@ hectáreas, que se ajustan por el factor de reducción, pero `resultado.png` sal
 | `descripcion.txt` | Resumen en lenguaje natural (base del texto alternativo accesible). |
 | `resultado.geojson` | Área quemada (con islas), quemado probable bajo humo y focos. Abrible en QGIS o geojson.io. |
 | `mascara_quemado.png`, `mascara_bajo_humo.png`, `mascara_focos.png` | Máscaras binarias. |
+| `resumen.html` | *(solo `--batch`)* índice con una fila por escena: miniatura enlazada, superficie, perímetro, focos, avisos, tiempo y estado. |
 
 ### Cómo leer `resultado.png`
 
@@ -87,7 +107,8 @@ pip install -r requirements.txt   # incluye pytest
 python -m pytest -q
 ```
 
-26 tests sobre escenas sintéticas con verdad conocida. Entre ellos:
+26 tests sobre escenas sintéticas con verdad conocida + 10 tests del modo lote (pareado por nombre,
+continuidad ante errores, resumen HTML y códigos de salida del CLI). Entre ellos:
 
 - un lago y un río fuera del incendio **nunca** se marcan como quemados;
 - un lago dentro del incendio queda dentro del perímetro pero **no** suma superficie;
@@ -150,7 +171,8 @@ firewatch/
   geometry.py     polígonos, perímetro, hectáreas, GeoJSON
   render.py       imagen anotada (Okabe-Ito, tramas, formas) y panel de diagnóstico
   pipeline.py     orquestación, informe y descripción textual
-  cli.py          línea de comandos
+  batch.py        modo lote: descubrimiento de escenas por nombre, ejecución en serie e índice HTML
+  cli.py          línea de comandos (una escena o --batch)
 tests/            escenas sintéticas y tests
 images/           (no versionada) imágenes de entrada
 resultados/       (no versionada) salidas generadas
