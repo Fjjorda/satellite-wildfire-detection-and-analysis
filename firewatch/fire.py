@@ -17,7 +17,7 @@ from scipy import ndimage as ndi
 
 from .config import FireParams
 from .features import channels, saturation
-from .morph import disk
+from .morph import dilate, disk
 
 
 @dataclass
@@ -33,6 +33,7 @@ class FireCluster:
     near_smoke: bool
     confidence: str            # "alta" | "media" | "baja"
     reasons: list = field(default_factory=list)
+    contrast: float = 0.0      # rojo medio del foco menos el de su entorno inmediato
 
 
 @dataclass
@@ -43,11 +44,60 @@ class FireResult:
     edge_ring: np.ndarray
 
 
-def hot_pixels(swir: np.ndarray, valid: np.ndarray, cloud: np.ndarray, p: FireParams) -> np.ndarray:
+def hot_pixels(swir: np.ndarray, valid: np.ndarray, cloud: np.ndarray, p: FireParams,
+               source: str = "swir") -> np.ndarray:
+    """Píxeles con firma de llama en SWIR. Dos firmas complementarias:
+
+    A) rojo dominante (B12 >> B8A): llama moderada.
+    B) amarillo/naranja muy brillante con B bajo: llama intensa, que también emite en B8A y por eso
+       no cumple R/G alto. Como el suelo brillante también es claro en SWIR, aquí se exige que el
+       píxel destaque mucho de la mediana REGIONAL y que la mancha sea pequeña.
+    """
     r, g, b = channels(swir)
-    m = (r >= p.min_red) & (r / (g + 1.0) >= p.min_red_green_ratio) & ((r - b) >= p.min_red_minus_blue)
-    m &= saturation(swir) >= p.min_sat
-    m &= valid & ~cloud
+    if source == "truecolor":
+        return _hot_pixels_tc(swir, valid, cloud, p)
+    a = (r >= p.min_red) & (r / (g + 1.0) >= p.min_red_green_ratio) & ((r - b) >= p.min_red_minus_blue)
+    a &= saturation(swir) >= p.min_sat
+    h, w = r.shape
+    win = max(15, int(round(p.hot_window_frac * float(np.hypot(h, w)))) | 1)
+    bsig = (r >= p.hot_min_red) & ((r - b) >= p.hot_min_red_minus_blue) & (saturation(swir) >= p.hot_min_sat)
+    bsig &= valid & ~cloud
+    if bsig.any():
+        regional = ndi.median_filter(r[::2, ::2].astype(np.float32), size=max(3, win // 2))
+        regional = np.repeat(np.repeat(regional, 2, axis=0), 2, axis=1)[:h, :w]
+        bsig &= (r - regional) >= p.hot_local_contrast
+        lab, n = ndi.label(bsig, structure=np.ones((3, 3)))
+        if n:
+            sizes = np.bincount(lab.ravel(), minlength=n + 1)
+            keep = (sizes >= 2) & (sizes <= max(30, p.hot_max_blob_frac * h * w))   # >=2 px: un píxel suelto es ruido
+            keep[0] = False
+            bsig = keep[lab]
+    m = (a | bsig) & valid & ~cloud
+    return m
+
+
+def _hot_pixels_tc(tc: np.ndarray, valid: np.ndarray, cloud: np.ndarray, p: FireParams) -> np.ndarray:
+    """Llamas visibles en True Color: píxeles naranja/amarillo muy brillantes que destacan de su entorno.
+
+    En visible solo se ve una llama muy intensa, así que es la firma B (contraste regional alto, mancha
+    pequeña, >= 2 px) más un rojo claramente por encima del verde para no confundirla con suelo claro.
+    """
+    r, g, b = channels(tc)
+    h, w = r.shape
+    m = ((r >= p.hot_min_red) & ((r - b) >= p.hot_min_red_minus_blue) & (saturation(tc) >= p.hot_min_sat)
+         & (r / (g + 1.0) >= p.tc_hot_min_red_green_ratio) & valid & ~cloud)
+    if not m.any():
+        return m
+    win = max(15, int(round(p.hot_window_frac * float(np.hypot(h, w)))) | 1)
+    regional = ndi.median_filter(r[::2, ::2].astype(np.float32), size=max(3, win // 2))
+    regional = np.repeat(np.repeat(regional, 2, axis=0), 2, axis=1)[:h, :w]
+    m &= (r - regional) >= p.tc_hot_local_contrast
+    lab, n = ndi.label(m, structure=np.ones((3, 3)))
+    if n:
+        sizes = np.bincount(lab.ravel(), minlength=n + 1)
+        keep = (sizes >= 2) & (sizes <= max(30, p.hot_max_blob_frac * h * w))
+        keep[0] = False
+        m = keep[lab]
     return m
 
 
@@ -60,18 +110,14 @@ def _intensity(ratio: float, peak: float) -> str:
 
 
 def detect_fire(swir: np.ndarray, valid: np.ndarray, cloud: np.ndarray, footprint: np.ndarray,
-                smoke: np.ndarray | None, p: FireParams,
-                extra_candidates: np.ndarray | None = None) -> FireResult:
-    """Detecta focos y los valida por contexto.
+                smoke: np.ndarray | None, p: FireParams, source: str = "swir") -> FireResult:
+    """Detecta focos SOLO a partir de la composición de entrada (SWIR o True Color) y los valida por contexto.
 
-    extra_candidates: píxeles calientes de otra fuente (p. ej. la imagen Wildfire),
-    que se suman a los detectados en SWIR antes del análisis de contexto.
+    source="truecolor": las llamas casi no se ven en visible; la confianza máxima de un foco es "media".
     """
     h, w = swir.shape[:2]
     diag = float(np.hypot(h, w))
-    cand = hot_pixels(swir, valid, cloud, p)
-    if extra_candidates is not None:
-        cand |= extra_candidates & valid & ~cloud
+    cand = hot_pixels(swir, valid, cloud, p, source)
 
     ring_px = max(p.edge_ring_min_px, int(round(p.edge_ring_frac * diag)))
     if footprint.any():
@@ -89,7 +135,7 @@ def detect_fire(swir: np.ndarray, valid: np.ndarray, cloud: np.ndarray, footprin
         smoke_near = np.zeros((h, w), dtype=bool)
 
     merge_px = max(p.cluster_merge_min_px, int(round(p.cluster_merge_frac * diag)))
-    grouped = ndi.binary_dilation(cand, structure=disk(merge_px)) if cand.any() else cand
+    grouped = dilate(cand, merge_px)
 
     # Polígonos quemados principales vs. secundarios (pequeños respecto al mayor)
     main_burn = footprint
@@ -106,6 +152,9 @@ def detect_fire(swir: np.ndarray, valid: np.ndarray, cloud: np.ndarray, footprin
 
     r, g, _ = channels(swir)
     ratio = r / (g + 1.0)
+    from .morph import disk as _disk
+    ring_se = _disk(p.context_ring_px)
+    pad = p.context_ring_px + 1
     clusters = []
     accepted = np.zeros((h, w), dtype=bool)
     objs = ndi.find_objects(lab)
@@ -146,37 +195,30 @@ def detect_fire(swir: np.ndarray, valid: np.ndarray, cloud: np.ndarray, footprin
             reasons.append("junto a humo")
             if conf == "media" and location == "interior":
                 conf = "alta"
+        # Contraste local: rojo del foco frente a su anillo (excluyendo otros candidatos)
+        y0, y1 = max(0, sl[0].start - pad), min(h, sl[0].stop + pad)
+        x0, x1 = max(0, sl[1].start - pad), min(w, sl[1].stop + pad)
+        local = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+        local[ys - y0, xs - x0] = True
+        ring = ndi.binary_dilation(local, structure=ring_se) & ~local & ~cand[y0:y1, x0:x1] & valid[y0:y1, x0:x1]
+        bg = float(np.median(r[y0:y1, x0:x1][ring])) if ring.any() else 0.0
+        contrast = float(r[ys, xs].mean()) - bg
+        if contrast < p.min_contrast:
+            conf = "baja"
+            reasons.append(f"no destaca de su entorno (contraste {contrast:.0f} < {p.min_contrast:.0f})")
         intensity = _intensity(mratio, peak)
+        if source == "truecolor":
+            reasons.append("detectado solo en True Color (firma de llama poco fiable)")
+            if conf == "alta":
+                conf = "media"
         clusters.append(FireCluster(
             id=cid,
             centroid_xy=(float(xs.mean()), float(ys.mean())),
             bbox_xywh=(int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)),
             n_pixels=int(len(xs)), peak_red=peak, mean_ratio=round(mratio, 3),
             intensity=intensity, location=location, near_smoke=nsmoke,
-            confidence=conf, reasons=reasons,
+            confidence=conf, reasons=reasons, contrast=round(contrast, 1),
         ))
         if conf != "baja":
             accepted[ys, xs] = True
     return FireResult(candidates=cand, accepted=accepted, clusters=clusters, edge_ring=edge_ring)
-
-
-def wildfire_hot_pixels(wf: np.ndarray, valid: np.ndarray, tc: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """Decodifica la imagen "Wildfire" (script de Pierre Markuse, Sentinel Hub).
-
-    El script pinta encima del color natural los píxeles con B12+B11 > {1.0, 1.25, 1.5, 2.0}
-    en rojo -> naranja -> amarillo según intensidad. Devuelve (máscara, nivel 1-3).
-
-    EXPERIMENTAL: no se ha podido probar aún con una imagen Wildfire real.
-    """
-    r, g, b = channels(wf)
-    sat = saturation(wf)
-    hot = (r >= 200) & (sat >= 0.5) & (r - b >= 100) & valid
-    if tc is not None:
-        # Debe ser claramente más rojo/brillante que el mismo píxel en True Color
-        hot &= (r - tc[..., 0]) >= 40
-    hue_ratio = g / (r + 1.0)          # 0 = rojo puro, ~1 = amarillo
-    level = np.zeros(r.shape, dtype=np.uint8)
-    level[hot & (hue_ratio < 0.45)] = 1
-    level[hot & (hue_ratio >= 0.45) & (hue_ratio < 0.75)] = 2
-    level[hot & (hue_ratio >= 0.75)] = 3
-    return hot, level

@@ -1,21 +1,14 @@
 """Línea de comandos.
 
-Una escena:
+Ejemplo:
     python -m firewatch --swir swir.png --truecolor tc.png --out resultados/avila
-
-Varias escenas (lote), emparejando por nombre de fichero:
-    python -m firewatch --batch images/ --out resultados/
-
-Descarga desde Sentinel (CDSE) y análisis directo:
-    python -m firewatch --download escenas.csv --out images/descargadas
-    python -m firewatch --run-manifiesto escenas.csv --out resultados/
-    python -m firewatch --check-auth        (valida SH_CLIENT_ID/SH_CLIENT_SECRET o .env)
 """
 from __future__ import annotations
 
 import argparse
-import sys
 import time
+import warnings
+from pathlib import Path
 
 from .batch import discover_scenes, run_batch, write_html_index
 from .config import Params
@@ -25,45 +18,16 @@ from .geometry import GeoRef
 from .pipeline import analyze, save_outputs
 
 
-def _blindar_consola():
-    """En Windows la consola es cp1252: sin esto, un acento o una flecha tumban el CLI."""
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(errors="replace")
-        except (AttributeError, OSError, ValueError):
-            pass
-
-
 def main(argv=None) -> int:
     _blindar_consola()
     ap = argparse.ArgumentParser(prog="firewatch",
                                  description="Delimita el área quemada y detecta focos activos.")
-    ap.add_argument("--swir", help="Composición SWIR (B12-B8A-B4) de UNA escena. Obligatoria salvo en otros modos.")
-    ap.add_argument("--batch", metavar="CARPETA",
-                    help="Analiza todas las escenas de la carpeta (recursivo): el SWIR, el True Color y la "
-                         "Wildfire de cada una se emparejan por nombre de fichero. Excluyente con --swir.")
-    ap.add_argument("--download", metavar="MANIFIESTO",
-                    help="Descarga las escenas del manifiesto CSV desde Copernicus Data Space (cuenta "
-                         "gratuita + SH_CLIENT_ID/SH_CLIENT_SECRET). --out es la carpeta de imágenes.")
-    ap.add_argument("--run-manifiesto", metavar="MANIFIESTO",
-                    help="Descarga las escenas del manifiesto (las que falten) y analiza todas en lote, "
-                         "generando el resumen HTML. --out es la carpeta de resultados.")
+    ap.add_argument("--swir", required=True, help="Composición SWIR (B12-B8A-B4). Obligatoria.")
     ap.add_argument("--truecolor", help="Composición True Color de la misma escena (recomendada).")
     ap.add_argument("--wildfire", help="Composición Wildfire de la misma escena (opcional).")
-    ap.add_argument("--check-auth", action="store_true",
-                    help="Comprueba las credenciales de Copernicus Data Space (SH_CLIENT_ID/SH_CLIENT_SECRET "
-                         "o .env) sin descargar ninguna escena. No necesita --out.")
-    ap.add_argument("--out",
-                    help="Carpeta de salida. Con --batch, una subcarpeta por escena; con --download, "
-                         "donde quedan las imágenes descargadas. Obligatoria salvo con --check-auth.")
+    ap.add_argument("--out", required=True, help="Carpeta de salida.")
     ap.add_argument("--base", choices=["swir", "truecolor", "wildfire"], default="swir",
                     help="Imagen sobre la que se dibuja el resultado.")
-    ap.add_argument("--size", type=int, default=1024,
-                    help="Lado mayor (px) de la imagen que se pide a la API al descargar (por defecto 1024).")
-    ap.add_argument("--force", action="store_true",
-                    help="Con --download / --run-manifiesto, vuelve a descargar escenas ya presentes.")
-    ap.add_argument("--images-out", default="images/descargadas",
-                    help="Carpeta de imágenes del modo --run-manifiesto (por defecto images/descargadas).")
     ap.add_argument("--pixel-size", type=float, help="Tamaño de píxel en metros (p. ej. 10 o 20).")
     ap.add_argument("--bbox", type=float, nargs=4, metavar=("LON_MIN", "LAT_MIN", "LON_MAX", "LAT_MAX"),
                     help="Extensión geográfica WGS84 de la imagen.")
@@ -73,6 +37,9 @@ def main(argv=None) -> int:
                     help="No estimar el área quemada probable bajo el humo.")
     ap.add_argument("--no-debug", action="store_true", help="No generar el panel de diagnóstico.")
     a = ap.parse_args(argv)
+    if not (a.imagenes or a.swir or a.truecolor or a.lote):
+        ap.error("indica al menos una imagen de entrada: --swir y/o --truecolor, --imagenes, o --lote. "
+                 "La Wildfire no es una entrada: va en --validar-con.")
 
     modos = [a.swir, a.batch, a.download, a.run_manifiesto]
     if a.check_auth:
@@ -89,46 +56,19 @@ def main(argv=None) -> int:
     params = Params()
     if a.no_smoke_recovery:
         params.burn.smoke_recovery = False
-    geo = GeoRef(pixel_size_m=a.pixel_size, bbox=tuple(a.bbox) if a.bbox else None)
-    max_side = a.max_side or None
-
-    if a.download:
-        return _download(a)
-    if a.run_manifiesto:
-        return _run_manifiesto(a, params, geo, max_side)
-    if a.batch:
-        return _batch(a, params, geo, max_side)
-
     t0 = time.time()
-    an = analyze(a.swir, a.truecolor, a.wildfire, geo=geo, max_side=max_side, params=params)
-    save_outputs(an, a.out, base=a.base, debug=not a.no_debug)
+    an = analyze(a.swir, a.truecolor, a.wildfire,
+                 geo=GeoRef(pixel_size_m=a.pixel_size, bbox=tuple(a.bbox) if a.bbox else None),
+                 max_side=a.max_side or None, params=params)
+    files = save_outputs(an, a.out, base=a.base, debug=not a.no_debug)
     r = an.report
     print(r["descripcion"])
     for w in r["avisos"]:
         print("AVISO:", w)
     print(f"Focos aceptados: {len(r['focos_activos'])} | descartados: {len(r['focos_descartados'])}")
     print(f"Tiempo: {time.time() - t0:.1f} s")
-    print(f"Salida: {a.out}")
-    return 0
-
-
-# ------------------------------------------------------------------ descarga
-
-def _check_auth() -> int:
-    """Comprueba las credenciales de Copernicus Data Space sin descargar escenas."""
-    try:
-        cliente = ClienteSH.desde_entorno()
-    except SinCredenciales as exc:
-        print(f"ERROR: {exc}")
-        return 2
-    print(f"Comprobando credenciales de Copernicus Data Space (client id {cliente.client_id[:12]}…) …")
-    try:
-        res = comprobar_acceso(cliente)
-    except ErrorDescarga as exc:
-        print(f"ERROR: {exc}")
-        return 1
-    print(f"OK: autenticación y Process API responden ({res['png_bytes']} bytes en "
-          f"{res['segundos']} s). Las credenciales son válidas.")
+    for k, v in files.items():
+        print(f"  {k}: {v}")
     return 0
 
 

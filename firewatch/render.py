@@ -70,7 +70,7 @@ def _triangle(img, cx, cy, size, fill, border, bw):
 
 
 def render_overlay(base: np.ndarray, burn, fire, smoke: np.ndarray | None, summary_lines: list[str],
-                   show_legend: bool = True, smoke_low: np.ndarray | None = None) -> np.ndarray:
+                   show_legend: bool = True, smoke_low: np.ndarray | None = None, front=None) -> np.ndarray:
     """Devuelve la imagen base con el perímetro, el área quemada, el humo y los focos."""
     img = np.clip(base, 0, 255).astype(np.uint8).copy()
     h, w = img.shape[:2]
@@ -122,13 +122,29 @@ def render_overlay(base: np.ndarray, burn, fire, smoke: np.ndarray | None, summa
     cv2.drawContours(img, cfp, -1, WHITE, t + 3, cv2.LINE_AA)
     cv2.drawContours(img, cfp, -1, VERMILION, t, cv2.LINE_AA)
 
+    # 4c) Dirección del humo: flecha desde el origen del penacho
+    if front is not None and front.smoke_vector is not None and front.smoke_origin_xy is not None:
+        ox, oy = front.smoke_origin_xy
+        L = 0.10 * diag
+        tip = (int(ox + front.smoke_vector[0] * L), int(oy + front.smoke_vector[1] * L))
+        cv2.arrowedLine(img, (int(ox), int(oy)), tip, BLACK, t + 5, cv2.LINE_AA, tipLength=0.25)
+        cv2.arrowedLine(img, (int(ox), int(oy)), tip, SKY, t + 1, cv2.LINE_AA, tipLength=0.25)
+
     # 5) Focos activos: píxeles calientes (amarillo con halo negro) + triángulo por foco.
     #    Confianza alta = triángulo relleno; media = triángulo hueco (forma, no solo color).
     acc = fire.accepted
     if acc.any():
-        halo = cv2.dilate(acc.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=max(1, t // 2)) > 0
+        halo = cv2.dilate(acc.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1) > 0
         img[halo] = BLACK
-        img[acc] = YELLOW
+        img[acc] = ORANGE
+
+    # Frente activo encima de los píxeles de fuego: halo blanco + cinta negro/amarillo
+    if front is not None:
+        for seg in front.segments:
+            pts = seg.points.reshape(-1, 1, 2).astype(np.int32)
+            cv2.polylines(img, [pts], False, WHITE, t + 5, cv2.LINE_AA)
+            cv2.polylines(img, [pts], False, BLACK, t + 3, cv2.LINE_AA)
+            _dashed_open(img, seg.points, YELLOW, t, dash=2 * t + 2, gap=2 * t + 2)
     size_by = {"baja": 2 * t + 3, "media": 3 * t + 3, "alta": 4 * t + 3}
     for c in fire.clusters:
         if c.confidence == "baja":
@@ -141,8 +157,34 @@ def render_overlay(base: np.ndarray, burn, fire, smoke: np.ndarray | None, summa
             _triangle_hollow(img, int(cx), int(cy) - sz, sz, t)
 
     if show_legend:
-        img = _legend_below(img, summary_lines, t)
+        present = set()
+        if burn.burned.any(): present.add("area")
+        if burn.footprint.any(): present.add("perim")
+        if us is not None and us.any(): present.add("under")
+        if acc.any(): present.add("fire_px")
+        if any(c.confidence == "alta" for c in fire.clusters): present.add("fire_hi")
+        if any(c.confidence == "media" for c in fire.clusters): present.add("fire_md")
+        if front is not None and front.segments: present.add("front")
+        if front is not None and front.smoke_vector is not None: present.add("wind")
+        if burn.water_inside.any(): present.add("water")
+        if smoke is not None and smoke.any(): present.add("smoke")
+        if smoke_low is not None and smoke_low.any(): present.add("smoke_low")
+        img = _legend_below(img, summary_lines, t, present)
     return img
+
+
+def _dashed_open(img, pts, color, thickness, dash, gap):
+    """Línea discontinua sobre una polilínea abierta."""
+    if len(pts) < 2:
+        return
+    d = np.hypot(*np.diff(pts.astype(float), axis=0).T)
+    acc, on = 0.0, True
+    for i in range(len(pts) - 1):
+        if on:
+            cv2.line(img, tuple(int(v) for v in pts[i]), tuple(int(v) for v in pts[i + 1]), color, thickness, cv2.LINE_AA)
+        acc += d[i]
+        if acc >= (dash if on else gap):
+            acc, on = 0.0, not on
 
 
 def _triangle_hollow(img, cx, cy, size, t):
@@ -152,14 +194,17 @@ def _triangle_hollow(img, cx, cy, size, t):
     cv2.polylines(img, [pts], True, YELLOW, max(1, t), cv2.LINE_AA)
 
 
-def _legend_below(img: np.ndarray, lines: list[str], t: int) -> np.ndarray:
+def _legend_below(img: np.ndarray, lines: list[str], t: int, present: set | None = None) -> np.ndarray:
     """Leyenda en una franja bajo la imagen, para no tapar datos."""
     h, w = img.shape[:2]
     fs = max(13, int(w / 70))
     font = _font(fs)
-    items = [("area", "Área quemada"), ("perim", "Perímetro"), ("under", "Quemado probable bajo humo"), ("fire_hi", "Foco activo (confianza alta)"),
+    items = [("area", "Área quemada"), ("perim", "Perímetro"), ("under", "Quemado probable bajo humo"), ("fire_px", "Píxeles en llamas"), ("fire_hi", "Foco activo (confianza alta)"),
              ("fire_md", "Foco activo (confianza media)"), ("water", "Agua (excluida)"),
-             ("smoke", "Humo (visible ocluido)"), ("smoke_low", "Humo de baja confianza (posible error)")]
+             ("smoke", "Humo (visible ocluido)"), ("smoke_low", "Humo de baja confianza (posible error)"),
+             ("front", "Frente activo"), ("wind", "Dirección del humo")]
+    if present is not None:
+        items = [it for it in items if it[0] in present] or [("perim", "Sin incendio detectado")]
     pad, row = fs // 2 + 2, int(fs * 1.6)
     sw = int(fs * 1.6)
     col_w = int(max(font.getlength(lbl) for _, lbl in items) + sw + 3 * pad)
@@ -207,6 +252,17 @@ def _legend_below(img: np.ndarray, lines: list[str], t: int) -> np.ndarray:
             for q in range(0, sw, 8):
                 d.line([sx + q, mid, sx + min(q + 5, sw), mid], fill=(90, 90, 90), width=t + 4)
                 d.line([sx + q, mid, sx + min(q + 5, sw), mid], fill=SKY, width=t + 1)
+        elif kind == "fire_px":
+            d.rectangle([sx + sw // 2 - 6, sy + 1, sx + sw // 2 + 6, sy + fs - 1], fill=ORANGE, outline=BLACK, width=2)
+        elif kind == "front":
+            d.line([sx, mid, sx + sw, mid], fill=(200, 200, 200), width=t + 5)
+            d.line([sx, mid, sx + sw, mid], fill=BLACK, width=t + 3)
+            for q in range(0, sw, 2 * (2 * t + 2)):
+                d.line([sx + q, mid, sx + min(q + 2 * t + 2, sw), mid], fill=YELLOW, width=t)
+        elif kind == "wind":
+            d.line([sx, mid, sx + sw - 4, mid], fill=BLACK, width=t + 4)
+            d.polygon([(sx + sw, mid), (sx + sw - 9, mid - 6), (sx + sw - 9, mid + 6)], fill=SKY, outline=BLACK)
+            d.line([sx, mid, sx + sw - 8, mid], fill=SKY, width=t)
         elif kind == "smoke_low":
             for q in range(0, sw, 5):
                 d.line([sx + q, mid, sx + min(q + 2, sw), mid], fill=(40, 40, 40), width=t + 1)
@@ -216,7 +272,8 @@ def _legend_below(img: np.ndarray, lines: list[str], t: int) -> np.ndarray:
     return np.asarray(canvas)
 
 
-def render_debug(path: Path, swir, score, water, smoke, cloud, burn, fire, overlay, smoke_low=None):
+def render_debug(path: Path, swir, score, water, smoke, cloud, burn, fire, overlay, smoke_low=None, front=None,
+                 validation=None):
     """Panel de diagnóstico para revisar cada paso (útil para ajustar umbrales)."""
     import matplotlib
     matplotlib.use("Agg")
@@ -224,7 +281,7 @@ def render_debug(path: Path, swir, score, water, smoke, cloud, burn, fire, overl
 
     fig, ax = plt.subplots(2, 3, figsize=(18, 10))
     ax = ax.ravel()
-    ax[0].imshow(np.clip(swir, 0, 255).astype(np.uint8)); ax[0].set_title("SWIR de entrada")
+    ax[0].imshow(np.clip(swir, 0, 255).astype(np.uint8)); ax[0].set_title("Imagen de entrada")
     im = ax[1].imshow(score, cmap="viridis", vmin=0, vmax=1); ax[1].set_title("Puntuación de quemado")
     fig.colorbar(im, ax=ax[1], fraction=0.035)
     veto = np.zeros(swir.shape[:2] + (3,), np.uint8)
@@ -246,11 +303,73 @@ def render_debug(path: Path, swir, score, water, smoke, cloud, burn, fire, overl
     fc = np.clip(swir, 0, 255).astype(np.uint8) // 3
     fc[fire.edge_ring] = (80, 80, 80)
     fc[fire.candidates] = (150, 150, 150)
+    if front is not None and front.active_zone is not None:
+        fc[front.active_zone] = (fc[front.active_zone] * 0.4 + np.array(ORANGE) * 0.6).astype(np.uint8)
+    if validation is not None:
+        fc[validation.truth_rejected] = (0, 200, 255)
     fc[fire.accepted] = YELLOW
-    ax[4].imshow(fc); ax[4].set_title("Fuego: candidatos (gris), aceptados (amarillo), anillo de borde")
+    if front is not None:
+        for seg in front.segments:
+            cv2.polylines(fc, [seg.points.reshape(-1, 1, 2).astype(np.int32)], False, (255, 255, 255), 2)
+    ax[4].imshow(fc); ax[4].set_title("Fuego: focos (amarillo), zona activa (naranja), frente (blanco),\nborde (gris), naranja de referencia descartado (cian)")
     ax[5].imshow(overlay); ax[5].set_title("Resultado")
     for a in ax:
         a.axis("off")
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     plt.close(fig)
+
+
+def render_validation(swir: np.ndarray, fire, val) -> np.ndarray:
+    """Imagen de validación: SWIR con la llama real de la referencia y lo detectado por el modelo.
+
+    - Anillo BLANCO con trama: llama real (referencia) ENCONTRADA por el modelo.
+    - Cuadro BERMELLÓN: llama real NO encontrada (fallo).
+    - Rombo AZUL: foco aceptado por el modelo sin llama en la referencia (falso positivo).
+    - Triángulo AMARILLO: foco aceptado que coincide con la referencia (acierto).
+    Distinguibles por forma, no solo por color.
+    """
+    img = np.clip(swir, 0, 255).astype(np.uint8).copy()
+    h, w = img.shape[:2]
+    t = max(2, int(round(min(h, w) / 450)))
+    pad = max(8, int(round(min(h, w) / 90)))
+    # píxeles de referencia en cian tenue para ver la forma real
+    img[val.truth] = (0.45 * img[val.truth] + 0.55 * np.array((0, 255, 255))).astype(np.uint8)
+
+    def box(cx, cy, r, color):
+        cv2.rectangle(img, (int(cx - r), int(cy - r)), (int(cx + r), int(cy + r)), BLACK, t + 2)
+        cv2.rectangle(img, (int(cx - r), int(cy - r)), (int(cx + r), int(cy + r)), color, t)
+
+    for m in val.hits:
+        cx, cy = m["centroide_xy"]
+        cv2.circle(img, (int(cx), int(cy)), pad, BLACK, t + 2)
+        cv2.circle(img, (int(cx), int(cy)), pad, WHITE, t)
+    for m in val.misses:
+        box(*m["centroide_xy"], pad, VERMILION)
+    for m in val.false_pos:
+        cx, cy = m["centroide_xy"]
+        pts = np.array([[cx, cy - pad], [cx + pad, cy], [cx, cy + pad], [cx - pad, cy]], np.int32)
+        cv2.polylines(img, [pts], True, BLACK, t + 2)
+        cv2.polylines(img, [pts], True, BLUE, t)
+    for c in fire.clusters:
+        if c.confidence == "baja":
+            continue
+        cx, cy = c.centroid_xy
+        _triangle(img, cx, cy - pad - 2 * t, max(5, pad // 2), YELLOW, BLACK, 1)
+    m = val.metrics
+    pc = lambda x: "—" if x is None else f"{round(100 * x)} %"
+    lines = [f"Validación vs Wildfire: recall {pc(m['recall'])} · precisión {pc(m['precision'])}",
+             f"Aciertos {m['aciertos']} · fallos {m['fallos_no_detectados']} · falsos positivos {m['falsos_positivos']}"]
+    legend = ["Círculo blanco = llama real encontrada", "Cuadro bermellón = llama real NO encontrada",
+              "Rombo azul = foco sin llama real (falso +)", "Triángulo amarillo = foco aceptado por el modelo",
+              "Cian = píxeles de llama de la referencia"]
+    fs = max(13, int(w / 70))
+    font = _font(fs)
+    row = int(fs * 1.55)
+    band = Image.new("RGB", (w, row * (len(lines) + len(legend)) + fs), WHITE)
+    d = ImageDraw.Draw(band)
+    y = fs // 2
+    for ln in lines + legend:
+        d.text((fs // 2, y), ln, fill=BLACK, font=font)
+        y += row
+    return np.vstack([img, np.asarray(band)])

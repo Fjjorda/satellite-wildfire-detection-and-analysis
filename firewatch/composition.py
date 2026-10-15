@@ -39,3 +39,70 @@ def guess_composition(rgb: np.ndarray, valid: np.ndarray | None = None) -> tuple
     else:
         kind = "truecolor"
     return kind, metrics
+
+
+NAMES = {"swir": "SWIR", "truecolor": "True Color", "wildfire": "Wildfire"}
+FLAGS = {"swir": "--swir", "truecolor": "--truecolor", "wildfire": "--validar-con"}
+
+
+def classify_file(path, max_side: int = 800) -> tuple[str, dict]:
+    """Tipo de composición de un fichero (sobre una miniatura, rápido)."""
+    from .io import border_mask, load_rgb_scaled
+    rgb, transp, _ = load_rgb_scaled(path, max_side=max_side)
+    return guess_composition(rgb, ~(transp | border_mask(rgb)))
+
+
+def assign_inputs(swir=None, truecolor=None, wildfire=None, extra=()):
+    """Reparte las imágenes por su tipo REAL de composición, no por la opción con que se pasaron.
+
+    - La distinción SWIR / visible es muy fiable (la vegetación es verde intensa solo en SWIR),
+      así que una imagen detectada como SWIR se usa como SWIR aunque llegue por otra opción, y
+      una pasada como --swir que no lo es se reubica.
+    - La Wildfire (referencia de validación) no entra en la detección. Entre True Color y Wildfire se respeta lo indicado: una Wildfire sin fuego activo es
+      indistinguible de un True Color. Las imágenes sin opción (`extra`) se asignan por detección.
+
+    Returns: ({tipo: ruta}, [avisos], {ruta: tipo_detectado})
+    """
+    items = [(p, h) for p, h in ((swir, "swir"), (truecolor, "truecolor"), (wildfire, "wildfire")) if p]
+    items += [(p, None) for p in extra]
+    detected = {p: classify_file(p)[0] for p, _ in items}
+    out, warnings, pending = {}, [], []
+
+    # 1) SWIR por detección
+    swirs = [p for p, _ in items if detected[p] == "swir"]
+    if swirs:
+        pick = next((p for p, h in items if p in swirs and h == "swir"), swirs[0])
+        out["swir"] = pick
+    for p, h in items:
+        if out.get("swir") == p:
+            continue
+        if detected[p] == "swir" and "swir" in out:
+            warnings.append(f"{_name(p)} parece otra composición SWIR; se ignora.")
+            continue
+        pending.append((p, h))
+
+    # 2) Visibles: se respeta la opción si es visible; si venía como --swir o sin opción, por detección
+    for p, h in pending:
+        kind = h if h in ("truecolor", "wildfire") else detected[p]
+        if kind == "swir":           # pasada como --swir pero no lo es
+            kind = detected[p]
+        if kind in out:
+            other = "wildfire" if kind == "truecolor" else "truecolor"
+            if other not in out and other != "swir":
+                kind = other
+            else:
+                warnings.append(f"{_name(p)}: ya hay una imagen {NAMES[kind]}; se ignora.")
+                continue
+        out[kind] = p
+
+    for p, h in items:
+        final = next((k for k, v in out.items() if v == p), None)
+        if h and final and final != h:
+            warnings.append(f"{_name(p)} se pasó con {FLAGS[h]} pero es una composición {NAMES[final]} "
+                            f"(detectada automáticamente): se analiza como {NAMES[final]}.")
+    return out, warnings, detected
+
+
+def _name(p) -> str:
+    from pathlib import Path
+    return Path(p).name

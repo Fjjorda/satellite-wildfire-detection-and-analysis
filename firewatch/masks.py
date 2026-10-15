@@ -10,7 +10,7 @@ from scipy import ndimage as ndi
 
 from .config import CloudParams, SmokeParams, WaterParams
 from .features import channels, luma, red_excess, saturation
-from .morph import disk, remove_small
+from .morph import dilate, disk, remove_small
 
 
 def water_mask(swir: np.ndarray, p: WaterParams, tc: np.ndarray | None = None,
@@ -33,6 +33,25 @@ def water_mask(swir: np.ndarray, p: WaterParams, tc: np.ndarray | None = None,
         m &= valid
     m = remove_small(m, p.min_area_px)
     # Huecos diminutos dentro del agua (artefactos JPEG, reflejos) siguen siendo agua
+    if m.any():
+        holes = ndi.binary_fill_holes(m) & ~m
+        m |= holes & ~remove_small(holes, max(50, int(2e-4 * m.size)))
+    if p.dilate_px > 0 and m.any():
+        m = ndi.binary_dilation(m, structure=disk(p.dilate_px))
+    return m
+
+
+def water_mask_tc(tc: np.ndarray, p: WaterParams, valid: np.ndarray | None = None) -> np.ndarray:
+    """Agua SOLO con True Color: oscura y con el azul por encima del rojo.
+
+    El carbón es oscuro pero neutro o rojizo (B <= R) y el bosque oscuro es verde (G > B); el agua
+    es la que tira a azul/verde-azulado. Menos fiable que con SWIR (donde el agua es casi negra).
+    """
+    r, _, b = channels(tc)
+    m = (luma(tc) < p.tc_max_luma) & ((b - r) >= p.tc_min_blue_minus_red)
+    if valid is not None:
+        m &= valid
+    m = remove_small(m, p.min_area_px)
     if m.any():
         holes = ndi.binary_fill_holes(m) & ~m
         m |= holes & ~remove_small(holes, max(50, int(2e-4 * m.size)))
@@ -115,7 +134,7 @@ def classify_smoke(smoke: np.ndarray | None, footprint: np.ndarray | None, p: Sm
     near = None
     if footprint is not None and footprint.any():
         r = max(3, int(round(p.near_burn_frac * float(np.hypot(h, w)))))
-        near = ndi.binary_dilation(footprint, structure=disk(r))
+        near = dilate(footprint, r)
     high = np.zeros(n + 1, dtype=bool)
     objs = ndi.find_objects(lab)
     for i, sl in enumerate(objs, start=1):

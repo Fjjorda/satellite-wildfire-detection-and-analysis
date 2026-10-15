@@ -8,7 +8,7 @@ from scipy import ndimage as ndi
 from skimage.filters import apply_hysteresis_threshold, threshold_otsu
 
 from .config import BurnParams
-from .features import luma, pseudo_nbr, saturation
+from .features import channels, luma, pseudo_nbr, saturation
 from .morph import disk, remove_small
 
 
@@ -61,6 +61,29 @@ def burn_score(swir: np.ndarray, valid: np.ndarray, p: BurnParams,
     else:
         support = 0.55 * c_dark + 0.45 * c_sat
     score = c_pn * _clip01(support * 1.25)
+    if p.smooth_sigma > 0:
+        score = ndi.gaussian_filter(score, p.smooth_sigma)
+    score[~valid] = 0.0
+    return score.astype(np.float32)
+
+
+def burn_score_tc(tc: np.ndarray, valid: np.ndarray, p: BurnParams,
+                  smoke: np.ndarray | None = None) -> np.ndarray:
+    """Puntuación de quemado SOLO con True Color, en [0, 1].
+
+    Sin SWIR no hay firma espectral directa de la cicatriz; se usa lo que sí se ve: el carbón es
+    OSCURO (respecto a la propia escena) y NO VERDE (la vegetación sana tiene ExG alto). Es una
+    estimación menos fiable: sombras de relieve y bosque denso muy oscuro pueden parecerse.
+    """
+    r, g, b = channels(tc)
+    exg = (2 * g - r - b) / (r + g + b + 1e-3)
+    c_nogreen = _clip01((p.tc_green_start - exg) / p.tc_green_span)
+    L = luma(tc)
+    ok = valid & ~(smoke if smoke is not None else False)
+    c_dark = _clip01((_darkness(L, ok) - p.tc_dark_start) / p.tc_dark_span)
+    score = c_nogreen * c_dark
+    if smoke is not None:
+        score = np.where(smoke, 0.0, score)
     if p.smooth_sigma > 0:
         score = ndi.gaussian_filter(score, p.smooth_sigma)
     score[~valid] = 0.0

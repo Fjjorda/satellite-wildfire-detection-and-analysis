@@ -178,7 +178,11 @@ def test_geojson_and_description(tmp_path, scene):
     swir, tc, _ = scene
     an = _run(tmp_path, swir, tc, geo=GeoRef(bbox=(-4.5, 40.2, -4.0, 40.5)))
     kinds = {f["properties"]["kind"] for f in an.geojson["features"]}
-    assert kinds == {"area_quemada", "foco_activo"}
+    assert kinds == {"area_quemada", "foco_activo", "frente_activo"}
+    fronts = [feature for feature in an.geojson["features"] if feature["properties"]["kind"] == "frente_activo"]
+    assert fronts
+    assert all(feature["geometry"]["type"] == "LineString" for feature in fronts)
+    assert all(feature["properties"]["longitud_px"] > 0 for feature in fronts)
     lon, lat = an.geojson["features"][0]["geometry"]["coordinates"][0][0]
     assert -4.5 <= lon <= -4.0 and 40.2 <= lat <= 40.5
     assert "Área quemada" in an.report["descripcion"]

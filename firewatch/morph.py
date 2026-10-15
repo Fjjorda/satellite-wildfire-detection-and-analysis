@@ -19,3 +19,12 @@ def remove_small(mask: np.ndarray, min_px: int) -> np.ndarray:
     keep = sizes >= min_px
     keep[0] = False
     return keep[lab]
+
+
+def dilate(mask: np.ndarray, r: float) -> np.ndarray:
+    """Dilatación con disco de radio r mediante transformada de distancia (rápida para r grandes)."""
+    if not mask.any():
+        return mask.copy()
+    if r <= 3:
+        return ndi.binary_dilation(mask, structure=disk(max(1, int(round(r)))))
+    return ndi.distance_transform_edt(~mask) <= r

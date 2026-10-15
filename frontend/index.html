@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="es" data-bs-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#123e34" />
+    <meta name="description" content="FireSentinel: análisis accesible de incendios en imágenes Sentinel-2." />
+    <title>FireSentinel · Análisis de imágenes</title>
+    <script>
+      try {
+        const theme = localStorage.getItem('firewatch-theme') || 'system';
+        document.documentElement.dataset.bsTheme = theme === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme === 'contrast' ? 'dark' : theme;
+        if (theme === 'contrast') document.documentElement.dataset.contrast = 'true';
+      } catch { /* System preferences remain available without browser storage. */ }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

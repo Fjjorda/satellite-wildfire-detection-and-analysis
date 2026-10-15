@@ -73,7 +73,8 @@ def polygon_length(pts: np.ndarray) -> float:
     return float(np.hypot(d[:, 0], d[:, 1]).sum())
 
 
-def to_geojson(burn_polys, fire_clusters, shape, geo: GeoRef, props: dict, smoke_polys=None) -> dict:
+def to_geojson(burn_polys, fire_clusters, shape, geo: GeoRef, props: dict, smoke_polys=None,
+               front_segments=None) -> dict:
     """GeoJSON con el área quemada y los focos.
 
     Sin bbox, las coordenadas son de píxel (x hacia la derecha, y hacia abajo)
@@ -100,6 +101,16 @@ def to_geojson(burn_polys, fire_clusters, shape, geo: GeoRef, props: dict, smoke
             "type": "Feature",
             "properties": {"kind": "area_quemada_probable_bajo_humo", "id": k + 1},
             "geometry": {"type": "Polygon", "coordinates": [ring(poly["outer"])] + [ring(h) for h in poly["holes"]]},
+        })
+    for k, seg in enumerate(front_segments or []):
+        props_seg = {"kind": "frente_activo", "id": k + 1, "longitud_px": round(seg.length_px, 1),
+                     "a_favor_del_humo": bool(seg.downwind)}
+        if geo.pixel_size_m:
+            props_seg["longitud_km"] = round(seg.length_px * geo.pixel_size_m / 1000, 3)
+        features.append({
+            "type": "Feature",
+            "properties": props_seg,
+            "geometry": {"type": "LineString", "coordinates": [tx(p) for p in seg.points]},
         })
     for c in fire_clusters:
         features.append({
