@@ -7,7 +7,7 @@ quemada** (reto básico) y **detecta los focos de fuego activo** (reto avanzado)
 con el perímetro y los focos dibujados. No entrena ningún modelo: usa reglas basadas en la física de la banda
 SWIR, con umbrales relativos a cada escena para generalizar a imágenes nuevas.
 
-**Estado: motor de análisis por línea de comandos y aplicación web local con React.**
+**Estado: motor de análisis por línea de comandos (lote, descarga de Sentinel e índice HTML) y aplicación web local con React.**
 
 ## Qué hace
 
@@ -20,6 +20,8 @@ SWIR, con umbrales relativos a cada escena para generalizar a imágenes nuevas.
 - **Quemado probable bajo el humo:** estimación aparte, claramente marcada como menos fiable que el área confirmada.
 - **Humo de baja confianza:** los fragmentos de humo pequeños o sueltos se marcan como posibles errores de detección y no se usan en el análisis.
 - **Superficie con rango** (estricto–permisivo), perímetro en km, GeoJSON, informe JSON y descripción en lenguaje natural.
+- **Modo lote:** `--batch` analiza todas las escenas de una carpeta de una vez (emparejamiento por nombre de fichero) y genera `resumen.html` con todas las escenas en una tabla revisable.
+- **Descarga directa de Sentinel:** `--download` / `--run-manifiesto` traen las escenas del Copernicus Data Space (cuenta gratuita) desde un manifiesto CSV, con el bbox y la fecha de cada una. `--check-auth` valida las credenciales sin descargar nada, y `python -m firewatch.geojson_csv` convierte la zona dibujada en el navegador (GeoJSON) en una fila del manifiesto.
 - **Accesibilidad de base:** paleta apta para daltonismo (Okabe-Ito), tramas y formas distintas (nunca solo color), leyenda fuera de la imagen y texto alternativo generado automáticamente.
 
 ## Instalación
@@ -114,27 +116,50 @@ python -m firewatch --swir images/niebla/swir.jpg --truecolor images/niebla/true
                     --wildfire images/niebla/wildfire.jpg --out resultados/niebla
 ```
 
-Con **solo la composición Wildfire** también funciona, en modo reducido: detecta los focos (llamas), su longitud
-y el humo, pero no el área quemada, que necesita la SWIR:
+**Lote:** para analizar varias escenas de una vez, en lugar de ir de una en una:
 
 ```bash
-python -m firewatch --wildfire images/niebla/wildfire.jpg --out resultados/niebla_wf
+python -m firewatch --batch images/ --out resultados/lote
 ```
+
+Recorre la carpeta (también subcarpetas) y empareja las composiciones **por nombre de fichero**: en cada
+carpeta, el que contiene `swir` es la SWIR, el que contiene `truecolor` (o se llama `tc`) el True Color y el
+que contiene `wildfire` (también sirve `…_Wildfires.jpg`) la Wildfire. Una carpeta con SWIR = una escena;
+sus salidas van a `--out/<nombre_de_la_carpeta>/`. Las carpetas sin SWIR se omiten con aviso, una imagen
+rota no detiene el lote, y al final se genera `--out/resumen.html` con una fila por escena (miniatura,
+superficie, focos, avisos y estado).
+
+La **Wildfire** no se usa para detectar: se compara *después* con lo detectado para validar los focos
+(precisión y recall). Por eso `--wildfire` es opcional y no sustituye a la SWIR.
 
 En Windows usa `\` en las rutas (`images\avila\swir.jpg`) y ponlas entre comillas si tienen espacios.
 
 | Opción | Obligatoria | Para qué |
 |---|---|---|
-| `--swir` | **sí** (salvo modo solo Wildfire) | Composición SWIR (B12-B8A-B4). Necesaria para el área quemada y el perímetro. |
+| `--swir` | **sí** (o `--batch` / `--download` / `--run-manifiesto`) | Composición SWIR (B12-B8A-B4). Contiene la información clave del área quemada. |
+| `--batch CARPETA` | **sí** (o `--swir`) | Analiza todas las escenas de la carpeta, emparejando por nombre de fichero. |
+| `--download MANIFIESTO` | **sí** (o `--swir`) | Descarga las escenas del manifiesto CSV desde Copernicus Data Space. `--out` es la carpeta de imágenes. |
+| `--run-manifiesto MANIFIESTO` | **sí** (o `--swir`) | Descarga las escenas que falten y analiza todas en lote. `--out` es la carpeta de resultados. |
+| `--check-auth` | no | Comprueba las credenciales de Copernicus Data Space sin descargar nada (no necesita `--out`). |
 | `--truecolor` | recomendada | Detecta mejor el humo y confirma el agua. Sin ella el resultado es casi igual, algo menos preciso. |
-| `--wildfire` | opcional | Composición Wildfire: añade sus llamas validadas y fija la intensidad de los focos. Sola, activa el modo reducido. |
-| `--out` | sí | Carpeta de salida (se crea sola). |
+| `--wildfire` | opcional | Composición Wildfire de la misma escena. No se usa para detectar: valida los focos después (precisión / recall). |
+| `--out` | sí (salvo `--check-auth`) | Carpeta de salida (se crea sola). Con `--batch`, una subcarpeta por escena. |
 | `--base swir\|truecolor\|wildfire` | no | Imagen sobre la que se dibuja el resultado (por defecto SWIR). |
+| `--size 1024` | no | Lado (px) de la imagen que se pide a la API al descargar. |
+| `--force` | no | Con `--download` / `--run-manifiesto`, vuelve a descargar escenas ya presentes. |
+| `--images-out images\descargadas` | no | Carpeta de imágenes del modo `--run-manifiesto`. |
 | `--pixel-size 10` | no | Metros por píxel **de la imagen original**, para obtener hectáreas y km. |
 | `--bbox LON_MIN LAT_MIN LON_MAX LAT_MAX` | no | Extensión geográfica WGS84: da hectáreas y coordenadas reales en el GeoJSON. |
 | `--max-side 2500` | no | Lado mayor máximo (px) con el que se analiza. Las imágenes mayores se reducen y la superficie se corrige. `0` = tamaño original (lento). |
 | `--no-smoke-recovery` | no | No estima el quemado probable bajo el humo. |
 | `--no-debug` | no | No genera el panel de diagnóstico (ahorra tiempo). |
+
+Con `--batch`, `--base`, `--pixel-size`, `--bbox`, `--max-side`, `--no-smoke-recovery` y `--no-debug`
+se aplican a **todas** las escenas del lote. Códigos de salida: `0` todo correcto, `1` alguna escena ha
+fallado (el resto se analiza igualmente), `2` no se ha encontrado ninguna escena con SWIR.
+
+> Para preparar el manifiesto a partir de una zona dibujada en el navegador de Copernicus, hay un comando
+> aparte: `python -m firewatch.geojson_csv` (ver [*Del navegador de Copernicus al CSV*](#3-del-navegador-de-copernicus-al-csv)).
 
 **Sobre la escala:** si la imagen es una captura o está reescalada, el tamaño de píxel ya no es 10/20 m. Sin
 `--pixel-size` ni `--bbox` el resultado se da en píxeles y % de la imagen.
@@ -142,6 +167,110 @@ En Windows usa `\` en las rutas (`images\avila\swir.jpg`) y ponlas entre comilla
 **Sobre el rendimiento:** con `--max-side 2500` (por defecto) una imagen de ~48 megapíxeles tarda unos 15 s en
 una prueba sintética. Las escenas reales con mucho detalle pueden tardar más. La reducción no afecta a las
 hectáreas, que se ajustan por el factor de reducción, pero `resultado.png` sale a la resolución reducida.
+
+## Descarga de escenas (Sentinel / Copernicus Data Space)
+
+Para probar el programa con escenas nuevas no hace falta exportarlas a mano desde el navegador: firewatch
+puede descargarlas directamente del **Copernicus Data Space Ecosystem**, usando el Process API de Sentinel Hub
+que devuelve la composición **ya renderizada** (PNG) de un bbox y un rango de fechas — sin bajarse productos
+`.SAFE` de cientos de megas.
+
+### 1. Cuenta y credenciales (una sola vez, gratis)
+
+1. Crea una cuenta en <https://dataspace.copernicus.eu>.
+2. En la consola, **Authentication → OAuth Clients → Create OAuth Client**: te da un *client id* y un
+   *client secret*.
+3. Expórtalos como variables de entorno (no los escribas en el código ni en el repositorio):
+
+```powershell
+# Windows (PowerShell)
+$env:SH_CLIENT_ID = "tu-client-id"
+$env:SH_CLIENT_SECRET = "tu-client-secret"
+```
+
+```bash
+# Linux / macOS
+export SH_CLIENT_ID="tu-client-id"
+export SH_CLIENT_SECRET="tu-client-secret"
+```
+
+Alternativa cómoda: copia [`.env.example`](.env.example) a `.env` en la raíz del repo, rellena los dos valores
+y listo. El `.env` está en `.gitignore` (nunca se sube); las variables de entorno reales tienen prioridad
+sobre él. Para comprobar que las credenciales funcionan **sin descargar ni analizar nada**:
+
+```bash
+python -m firewatch --check-auth
+```
+
+### 2. Manifiesto de escenas (CSV)
+
+Una fila por escena: `nombre,lon_min,lat_min,lon_max,lat_max,desde,hasta` (fechas `AAAA-MM-DD`; `hasta`
+opcional = mismo día que `desde`; con un rango se usa la pasada menos nublada). Hay un ejemplo listo en
+[`escenas_ejemplo.csv`](escenas_ejemplo.csv):
+
+```csv
+nombre,lon_min,lat_min,lon_max,lat_max,desde,hasta
+avila,-4.90,40.45,-4.55,40.75,2026-07-01,2026-07-31
+niebla,-7.00,37.25,-6.70,37.45,2026-07-01,2026-07-31
+```
+
+> ⚠️ Los bbox y las fechas de `escenas_ejemplo.csv` son **ilustrativos** (coordenadas aproximadas de esas
+> localidades y un mes cualquiera). Ajusta cada fila a la zona y las fechas reales del incendio que quieras
+> estudiar: con una zona que no sea un incendio, el detector puede marcar falsos positivos en suelo urbano
+> o desnudo.
+
+### 3. Del navegador de Copernicus al CSV
+
+El navegador de Copernicus (<https://browser.dataspace.copernicus.eu>) no da el bbox directamente, pero sí la
+**geometría que dibujas**: traza un rectángulo sobre la zona y copia el GeoJSON. Tendrá una pinta así:
+
+```json
+{"type":"Polygon","coordinates":[[[-4.872405,40.152925],[-4.872405,40.511843],
+                                  [-4.114238,40.511843],[-4.114238,40.152925],
+                                  [-4.872405,40.152925]]]}
+```
+
+`firewatch` no usa el polígono, sino su **rectángulo envolvente** (bbox). Para no hacer mínimos y máximos a
+mano, hay un conversor que además puede añadir la fila al manifiesto:
+
+```bash
+# Con el GeoJSON guardado en zona.geojson (o pegado por la entrada estándar usando '-')
+python -m firewatch.geojson_csv zona.geojson -n avila-26jul --desde 2026-07-26 -o test1.csv
+```
+
+- `-n` es el nombre de la escena (por defecto, el del fichero) y `--desde`/`--hasta` las fechas.
+- `-o/--append MANIFIESTO.csv` añade la fila (crea la cabecera si no existe) y **no duplica** un nombre que ya
+  esté en el manifiesto salvo que uses `--force`. Sin `-o` solo imprime la fila por pantalla.
+- En GeoJSON cada par es `[longitud, latitud]`; el conversor coge el mínimo y el máximo de cada eje, así que
+  da igual por qué esquina empiece el anillo. Si la zona no es un rectángulo, se guarda el rectángulo que la
+  encierra (firewatch trabaja con bbox, no con polígonos).
+- Si omites `--desde`, imprime la fila con `desde,hasta` como marcadores para que los rellenes a mano.
+
+### 4. Descargar y analizar
+
+```bash
+# Solo descargar (queda en images/descargadas/<nombre>/{swir,truecolor,wildfire}.png)
+python -m firewatch --download escenas_ejemplo.csv --out images/descargadas
+
+# Descargar lo que falte y analizar todo de una vez → resultados/resumen.html
+python -m firewatch --run-manifiesto escenas_ejemplo.csv --out resultados/
+```
+
+- Las tres composiciones se piden con **el mismo bbox y tamaño**, así que quedan alineadas: SWIR
+  (B12-B8A-B4, evalscript oficial), True Color y Wildfire (QuickFire de Pierre Markuse, CC BY 4.0). El True
+  Color lleva la **corrección gamma (~2.2, sRGB)** del navegador de Copernicus: el Process API devuelve
+  reflectancia lineal y, sin ella, la descarga saldría ~2 veces más oscura que la imagen de referencia.
+- Cada escena lleva un `escena.json` con el bbox, fechas y tamaño; `--batch` lo lee y calcula **hectáreas,
+  km y coordenadas reales sin pasar `--bbox`**.
+- Re-ejecutar **no vuelve a descargar** lo que ya está al día, **pero sí si cambiaste su bbox, fechas o
+  `--size`**: compara con el `escena.json` guardado y lo marca como *actualizada* (así no te quedas con una
+  versión anterior). `--force` lo fuerza siempre. Si un bbox/fecha no tiene pasada de Sentinel-2, la escena
+  se marca como error y el lote sigue.
+- `--run-manifiesto` analiza **exactamente las escenas del manifiesto**. Las descargas anteriores que haya en
+  `--images-out` y no estén en el manifiesto se ignoran con un aviso (y las escenas que fallen también), así
+  que una ejecución vieja no se cuela en el lote. Para analizar *todo* lo que haya en una carpeta usa `--batch`.
+- Códigos de salida: `0` todo correcto, `1` alguna escena con error, `2` nada que hacer (manifiesto inválido
+  o credenciales ausentes).
 
 ## Salidas (en la carpeta `--out`)
 
@@ -153,6 +282,7 @@ hectáreas, que se ajustan por el factor de reducción, pero `resultado.png` sal
 | `descripcion.txt` | Resumen en lenguaje natural (base del texto alternativo accesible). |
 | `resultado.geojson` | Área quemada (con islas), quemado probable bajo humo, focos (puntos) y frente activo (líneas). Abrible en QGIS o geojson.io. |
 | `mascara_quemado.png`, `mascara_bajo_humo.png`, `mascara_focos.png`, `mascara_zona_activa.png` | Máscaras binarias. |
+| `resumen.html` | *(solo `--batch`)* índice con una fila por escena: miniatura enlazada, superficie, perímetro, focos, avisos, tiempo y estado. |
 
 En `informe.json`, el bloque `fuego_activo` resume el reto avanzado: número de focos, tramos y km de frente activo,
 fracción del perímetro activa, hectáreas con y sin actividad, dirección del humo y fracción del frente a favor del humo.
@@ -182,7 +312,13 @@ pip install -r requirements.txt   # incluye pytest
 python -m pytest -q
 ```
 
-Pruebas sobre escenas sintéticas con verdad conocida. Entre ellas:
+116 tests en total: 23 sobre escenas sintéticas con verdad conocida + 13 del modo lote (pareado por nombre,
+continuidad ante errores, resumen HTML y códigos de salida del CLI) + 32 de descarga y credenciales
+(manifiesto, peticiones al Process API con red simulada, caché de token, escenas sin datos, `--check-auth`,
+lectura de `.env`, invalidación de la caché al cambiar el manifiesto, escenas ajenas/fallidas ignoradas e
+integración con el lote) + 30 del conversor GeoJSON → CSV (polígonos del navegador, orden del anillo,
+`Feature`/`FeatureCollection`, coordenadas fuera de rango, y el manifiesto generado leído por el descargador)
++ 18 de la API web (cola, subidas, exportaciones y la Wildfire como referencia de validación). Entre ellos:
 
 - un lago y un río fuera del incendio **nunca** se marcan como quemados;
 - un lago dentro del incendio queda dentro del perímetro pero **no** suma superficie;
@@ -196,8 +332,7 @@ Pruebas sobre escenas sintéticas con verdad conocida. Entre ellas:
 - la superficie con y sin actividad suma el área confirmada;
 - un punto rojizo que no destaca de su entorno se descarta por falta de contraste;
 - la dirección del humo y la cabeza del incendio se identifican correctamente;
-- los niveles de la imagen Wildfire fijan la intensidad de los focos;
-- en la Wildfire, el suelo salmón sin núcleo amarillo no se toma por fuego, y el modo solo Wildfire funciona;
+- la Wildfire se usa solo como referencia de validación (no añade focos por sí sola) y su suelo salmón sin núcleo amarillo no se toma por fuego;
 - robustez frente a brillo ±20 %, compresión JPEG, reescalado ×0,5, marcos de captura y True Color de tamaño ligeramente distinto.
 
 Las pruebas de la API requieren `requirements-web.txt` y usan el motor real con archivos temporales:
@@ -246,7 +381,7 @@ SWIR (+ True Color, + Wildfire)
   │
   ├─ 3. Fuego activo (AVANZADO)
   │     • Candidatos: rojo (B12) saturado y muy superior al verde (B8A), fuera de nubes
-  │     • (+ llamas de la imagen Wildfire, si se aporta: naranja con núcleo amarillo, nivel rojo/naranja/amarillo)
+  │     • (la imagen Wildfire no interviene en la detección: se usa después como referencia de validación)
   │     • Contraste local: el foco debe destacar sobre su entorno inmediato (como MODIS/VIIRS)
   │     • Contexto: borde del quemado → frente (alta); interior → rescoldo (media);
   │       junto a un polígono pequeño y separado → media; aislado → descartado
@@ -279,10 +414,15 @@ firewatch/
   geometry.py     polígonos, perímetro, hectáreas, GeoJSON
   render.py       imagen anotada (Okabe-Ito, tramas, formas) y panel de diagnóstico
   pipeline.py     orquestación, informe y descripción textual
-  cli.py          línea de comandos
+  batch.py        modo lote: descubrimiento de escenas por nombre, ejecución en serie e índice HTML
+  download.py     descarga de escenas desde Copernicus Data Space (Process API, evalscripts oficiales)
+  geojson_csv.py  conversor de la zona dibujada en el navegador (GeoJSON) a una fila del manifiesto
+  cli.py          línea de comandos (una escena, --batch, --download, --run-manifiesto o --check-auth)
   web/            API local y capas independientes en coordenadas de imagen
 frontend/         React, idiomas, visor, exportaciones y pruebas de navegador
 tests/            escenas sintéticas y tests
+escenas_ejemplo.csv  manifiesto de ejemplo para --download / --run-manifiesto
+.env.example      plantilla de credenciales (copia a .env, que no se versiona)
 images/           (no versionada) imágenes de entrada
 resultados/       (no versionada) salidas generadas
 ```
@@ -296,12 +436,13 @@ resultados/       (no versionada) salidas generadas
 - **Suelos rojizos y brillantes** (minería, como Riotinto cerca de Niebla) pueden aparecer como polígonos
   secundarios; sus focos se marcan con confianza media.
 - **Sin True Color** el humo y el agua son menos fiables, y puede haber más zonas de humo de baja confianza.
-- **Solo True Color no es válido:** toda la lógica se apoya en la composición SWIR (o, para focos, en la Wildfire).
-- **Wildfire:** validada con la imagen real de Niebla. El naranja solo se acepta como fuego si tiene núcleo amarillo
-  (o es un fragmento pegado a uno que lo tiene), porque el fondo del script también pinta de salmón los suelos
-  brillantes. Un frente muy débil, sin ningún píxel amarillo, se descartaría.
-- **Modo solo Wildfire:** sin área quemada. "Frente" es la longitud de la línea de llamas y el contexto de los focos
-  es "parte del incendio principal" en lugar de "borde del área quemada".
+- **Solo True Color:** el motor admite analizar con True Color solo (humo y focos), pero el área quemada y el
+  perímetro necesitan la SWIR; el CLI pide `--swir` o un modo de lote/descarga.
+- **Wildfire:** composición de referencia, no de detección. El naranja solo se acepta como fuego si tiene núcleo
+  amarillo (o es un fragmento pegado a uno que lo tiene), porque el fondo del script también pinta de salmón los
+  suelos brillantes. Un frente muy débil, sin ningún píxel amarillo, se descartaría.
+- **Descarga (Sentinel):** el manifiesto no filtra por cobertura de nubes; se usa la pasada menos nublada del rango
+  de fechas, pero una escena muy nublada puede requerir cambiar `desde`/`hasta` a mano.
 - **Dirección del humo:** supone la imagen orientada al norte. La "cabeza del incendio" es una inferencia
   (el fuego avanza a favor del viento), no una medición.
 - **Zona con actividad:** el radio de 250 m es un criterio operativo ajustable (`zone_radius_m` en `config.py`).

@@ -481,3 +481,25 @@ def test_batch_usa_bbox_del_sidecar(tmp_path, cliente):
     results = run_batch(scenes, tmp_path / "out", debug=False, log=lambda *a, **k: None)
     a = results[0].informe["area_quemada"]
     assert "hectareas" in a and a["hectareas"] > 0
+
+
+# ----------------------------------------------------------- evalscripts (tono)
+
+def test_evalscript_truecolor_aplica_gamma_srgb():
+    """El Process API devuelve reflectancia lineal; el navegador de Copernicus la
+    codifica en sRGB (gamma ~2.2). Sin esa gamma la descarga sale ~2x más oscura
+    que la imagen de referencia, así que el evalscript de True Color debe aplicarla."""
+    assert "1/2.2" in dl.EVALSCRIPT_TRUECOLOR
+    assert "Math.pow(rgb[0]" in dl.EVALSCRIPT_TRUECOLOR
+    # Y no la aplicamos a SWIR ni a Wildfire: esos ya coinciden con el navegador.
+    assert "Math.pow" not in dl.EVALSCRIPT_SWIR
+    assert "Math.pow" not in dl.EVALSCRIPT_WILDFIRE
+
+
+def test_descarga_pide_truecolor_con_gamma(tmp_path):
+    session = FakeSession()
+    c = dl.ClienteSH("id", "secret", session=session)
+    dl.descargar_escena(dl.Escena("s", (-4.0, 40.0, -3.9, 40.1), "2026-07-21"), tmp_path, c)
+    truecolor = [r for r in session.solicitudes if _cual(r["evalscript"]) == "truecolor"]
+    assert len(truecolor) == 1
+    assert "1/2.2" in truecolor[0]["evalscript"]

@@ -160,10 +160,10 @@ def run_batch(scenes: list[Scene], out_root, *, base: str = "swir",
         # El bbox del sidecar (escena descargada) tiene prioridad sobre el --bbox global.
         g = sc.geo if sc.geo is not None else geo
         try:
-            an = analyze(sc.swir, sc.truecolor, sc.wildfire,
+            an = analyze(sc.swir, sc.truecolor,
                          params=copy.deepcopy(params) if params is not None else None,
                          geo=GeoRef(pixel_size_m=g.pixel_size_m, bbox=g.bbox) if g else None,
-                         max_side=max_side)
+                         max_side=max_side, reference_path=sc.wildfire)
             files = save_outputs(an, out_dir, base=base, debug=debug)
         except Exception as exc:  # una imagen rota no debe abortar el lote
             dt = time.time() - t0

@@ -60,6 +60,9 @@ function evaluatePixel(sample) {
 }
 """
 
+# El navegador de Copernicus muestra/exporta en sRGB (gamma ~2.2). El Process API
+# devuelve la reflectancia lineal tal cual, así que sin la gamma la descarga sale
+# ~2x más oscura que la imagen de referencia del navegador.
 EVALSCRIPT_TRUECOLOR = """//VERSION=3
 // True color con compresión de realces (HighlightCompressVisualizer), como en Copernicus Browser
 function setup() {
@@ -68,7 +71,7 @@ function setup() {
 function evaluatePixel(sample) {
   let viz = new HighlightCompressVisualizer(0.0, 0.4);
   let rgb = viz.processList([sample.B04, sample.B03, sample.B02]);
-  return [rgb[0], rgb[1], rgb[2], sample.dataMask];
+  return [Math.pow(rgb[0], 1/2.2), Math.pow(rgb[1], 1/2.2), Math.pow(rgb[2], 1/2.2), sample.dataMask];
 }
 """
 
