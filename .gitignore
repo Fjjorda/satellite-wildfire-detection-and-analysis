@@ -15,6 +15,9 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# --- Credenciales locales (¡nunca al repositorio!) ---
+.env
+
 # --- Datos del reto (pesados y/o de terceros: no se suben) ---
 # Las imágenes viven en images/ y los resultados se generan en resultados/.
 images/*

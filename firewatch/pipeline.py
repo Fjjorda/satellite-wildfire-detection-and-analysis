@@ -274,8 +274,12 @@ def save_outputs(an: Analysis, out_dir, base: str = "swir", debug: bool = True) 
     if an.burn.under_smoke is not None:
         p = out / "mascara_bajo_humo.png"; Image.fromarray((an.burn.under_smoke * 255).astype(np.uint8)).save(p); files["mask_under_smoke"] = str(p)
     p = out / "mascara_focos.png"; Image.fromarray((an.fire.accepted * 255).astype(np.uint8)).save(p); files["mask_fire"] = str(p)
-    p = out / "resultado.geojson"; p.write_text(json.dumps(an.geojson, ensure_ascii=False)); files["geojson"] = str(p)
-    p = out / "informe.json"; p.write_text(json.dumps(r, ensure_ascii=False, indent=2)); files["report"] = str(p)
+    p = out / "resultado.geojson"
+    p.write_text(json.dumps(an.geojson, ensure_ascii=False), encoding="utf-8")
+    files["geojson"] = str(p)
+    p = out / "informe.json"
+    p.write_text(json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
+    files["report"] = str(p)
     p = out / "descripcion.txt"; p.write_text(r["descripcion"] + "\n", encoding="utf-8"); files["alt_text"] = str(p)
     if debug:
         p = out / "diagnostico.png"

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import html
+import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -38,6 +39,7 @@ class Scene:
     truecolor: Path | None = None
     wildfire: Path | None = None
     avisos: list[str] = field(default_factory=list)
+    geo: GeoRef | None = None    # bbox del sidecar escena.json, si la escena se descargó con --download
 
 
 @dataclass
@@ -77,6 +79,21 @@ def _first(paths: list[Path], que: str, avisos: list[str], rel: Path) -> Path:
     return paths[0]
 
 
+def _geo_sidecar(carpeta: Path) -> GeoRef | None:
+    """Lee el bbox de `escena.json` (sidecar que escribe --download) para dar escala real."""
+    p = carpeta / "escena.json"
+    if not p.is_file():
+        return None
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8"))
+        bbox = meta.get("bbox")
+        if not bbox or len(bbox) != 4:
+            return None
+        return GeoRef(bbox=tuple(float(x) for x in bbox))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def discover_scenes(root) -> tuple[list[Scene], list[str]]:
     """Busca escenas bajo `root` (recursivo). Devuelve (escenas, avisos)."""
     root = Path(root)
@@ -114,7 +131,8 @@ def discover_scenes(root) -> tuple[list[Scene], list[str]]:
         nombre = "-".join(rel.parts) if rel.parts else "escena"
         sc = Scene(nombre=nombre, carpeta=carpeta, swir=swirs[0],
                    truecolor=_first(tcs, "True Color", avisos, rel) if tcs else None,
-                   wildfire=_first(wfs, "Wildfire", avisos, rel) if wfs else None)
+                   wildfire=_first(wfs, "Wildfire", avisos, rel) if wfs else None,
+                   geo=_geo_sidecar(carpeta))
         scenes.append(sc)
 
     # Nombres únicos (dos carpetas distintas pueden llamarse igual)
@@ -139,10 +157,12 @@ def run_batch(scenes: list[Scene], out_root, *, base: str = "swir",
         t0 = time.time()
         out_dir = out_root / sc.nombre
         log(f"[{i}/{total}] {sc.nombre} …", end="")
+        # El bbox del sidecar (escena descargada) tiene prioridad sobre el --bbox global.
+        g = sc.geo if sc.geo is not None else geo
         try:
             an = analyze(sc.swir, sc.truecolor, sc.wildfire,
                          params=copy.deepcopy(params) if params is not None else None,
-                         geo=GeoRef(pixel_size_m=geo.pixel_size_m, bbox=geo.bbox) if geo else None,
+                         geo=GeoRef(pixel_size_m=g.pixel_size_m, bbox=g.bbox) if g else None,
                          max_side=max_side)
             files = save_outputs(an, out_dir, base=base, debug=debug)
         except Exception as exc:  # una imagen rota no debe abortar el lote
